@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>EyeGuard Ultimate</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;800&display=swap')
+        <link rel="manifest" href="manifest.json">
+<link rel="icon" href="logo.png">
+<link rel="apple-touch-icon" href="logo.png">
+
+        body {
+            font-family: 'JetBrains Mono', monospace;
+            background-color: #020617;
+            color: #e2e8f0;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        #cam-wrapper {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 120px;
+            height: 160px;
+            border: 2px solid #334155;
+            border-radius: 12px;
+            overflow: hidden;
+            z-index: 50;
+            background: #000;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+        }
+
+        #webcam, #output_canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1);
+            object-fit: cover;
+        }
+        #output_canvas { z-index: 10; }
+
+        .alarm-active { animation: panic-mode 0.3s infinite; }
+        @keyframes panic-mode {
+            0% { background-color: #020617; box-shadow: inset 0 0 0 red; }
+            50% { background-color: #450a0a; box-shadow: inset 0 0 100px red; }
+            100% { background-color: #020617; box-shadow: inset 0 0 0 red; }
+        }
+
+        #system-log {
+            font-size: 10px;
+            color: #64748b;
+            margin-top: 10px;
+            background: #0f172a;
+            padding: 10px;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 400px;
+            min-height: 40px;
+            max-height: 80px;
+            overflow-y: auto;
+            border: 1px solid #1e293b;
+        }
+        .log-success { color: #22c55e; }
+        .log-warn { color: #f59e0b; }
+
+        /* Instructions Modal */
+        #pip-error-modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col items-center justify-center relative">
+
+    <!-- Error Modal -->
+    <div id="pip-error-modal" class="flex-col text-center">
+        <div class="text-5xl mb-4">⚠️</div>
+        <h2 class="text-xl font-bold text-white mb-2">Feature Not Supported Here</h2>
+        <p class="text-sm text-gray-300 mb-6">
+            The Acode preview cannot run in the background.<br><br>
+            <span class="text-green-400 font-bold">SOLUTION:</span><br>
+            Tap the menu (3 dots) and select<br>
+            <span class="bg-gray-800 px-2 py-1 rounded border border-gray-600">Open in Browser</span>
+        </p>
+        <button onclick="document.getElementById('pip-error-modal').style.display='none'" class="px-6 py-3 bg-blue-600 rounded-lg text-white font-bold">OK, I Understand</button>
+    </div>
+
+    <div class="z-10 flex flex-col items-center space-y-5 w-full px-6">
+        <div class="flex flex-col items-center">
+            <div id="main-icon" class="text-6xl mb-2">👁️</div>
+            <h1 id="status-header" class="text-3xl font-extrabold tracking-tighter text-blue-500">LOADING AI</h1>
+        </div>
+
+        <div class="w-full max-w-xs bg-slate-800 h-3 rounded-full overflow-hidden relative border border-slate-700">
+            <div id="blink-bar" class="h-full bg-emerald-500 w-0 transition-all duration-75"></div>
+        </div>
+
+        <button id="start-btn" class="hidden w-full max-w-xs py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg transition-all active:scale-95 border-b-4 border-emerald-800">
+            START MONITORING
+        </button>
+
+        <button id="bg-mode-btn" class="hidden w-full max-w-xs py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl shadow-lg transition-all active:scale-95 border-b-4 border-blue-800 flex flex-col items-center">
+            <span>ACTIVATE BACKGROUND MODE</span>
+            <span class="text-[9px] font-normal opacity-80">For multitasking / PDF</span>
+        </button>
+
+        <div id="system-log"><div>> System Init...</div></div>
+
+        <div id="settings-area" class="hidden w-full max-w-xs p-3 bg-slate-900 rounded-xl border border-slate-800">
+            <label class="flex justify-between text-xs font-bold text-slate-400 mb-2">
+                <span>SENSITIVITY</span>
+                <span id="sens-val">50%</span>
+            </label>
+            <input type="range" id="sensitivity" min="0.3" max="0.7" step="0.05" value="0.5" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer">
+        </div>
+    </div>
+
+    <div id="cam-wrapper">
+        <video id="webcam" autoplay playsinline muted></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <script type="module">
+        import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/+esm";
+
+        const logBox = document.getElementById('system-log');
+        const statusHeader = document.getElementById('status-header');
+        const mainIcon = document.getElementById('main-icon');
+        const startBtn = document.getElementById('start-btn');
+        const bgModeBtn = document.getElementById('bg-mode-btn');
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('output_canvas');
+        const canvasCtx = canvas.getContext('2d');
+        const blinkBar = document.getElementById('blink-bar');
+        const settingsArea = document.getElementById('settings-area');
+        const sensitivityInput = document.getElementById('sensitivity');
+        const sensVal = document.getElementById('sens-val');
+        const errorModal = document.getElementById('pip-error-modal');
+
+        let faceLandmarker;
+        let lastVideoTime = -1;
+        let isMonitoring = false;
+        let eyesClosedStart = 0;
+        let alarmTriggered = false;
+        let BLINK_THRESHOLD = 0.5; 
+        const ALARM_DELAY_MS = 300; 
+        let audioCtx, sirenOsc, gainNode, isSirenOn = false;
+        const LEFT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246, 33];
+        const RIGHT_EYE = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398, 362];
+
+        function log(msg, type = 'sys') {
+            const div = document.createElement('div');
+            div.innerText = `> ${msg}`;
+            div.className = type === 'warn' ? 'log-warn' : 'log-success';
+            logBox.appendChild(div);
+            logBox.scrollTop = logBox.scrollHeight;
+        }
+
+        async function initAI() {
+            try {
+                const filesetResolver = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+                faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                    baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`, delegate: "GPU" },
+                    outputFaceBlendshapes: true, runningMode: "VIDEO", numFaces: 1
+                });
+                statusHeader.innerText = "READY";
+                statusHeader.className = "text-3xl font-extrabold text-emerald-400";
+                startBtn.classList.remove("hidden");
+            } catch (e) { log("Load Fail: Check Web Connection", "warn"); }
+        }
+
+        startBtn.addEventListener("click", () => {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const silentOsc = audioCtx.createOscillator();
+            const silentGain = audioCtx.createGain();
+            silentGain.gain.value = 0.0001; 
+            silentOsc.connect(silentGain); silentGain.connect(audioCtx.destination); silentOsc.start();
+            
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 480, height: 360 } }).then((stream) => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    startLoop();
+                    startBtn.classList.add("hidden");
+                    bgModeBtn.classList.remove("hidden");
+                    settingsArea.classList.remove("hidden");
+                    statusHeader.innerText = "SCANNING";
+                    isMonitoring = true;
+                });
+            });
+        });
+
+        bgModeBtn.addEventListener("click", async () => {
+            try {
+                if (video.readyState >= 1) {
+                    await video.requestPictureInPicture();
+                    log("Background Mode: ON", "success");
+                }
+            } catch (error) {
+                // SHOW HELPFUL ERROR MODAL
+                errorModal.style.display = "flex";
+                log("PiP Failed: Not supported in this view", "warn");
+            }
+        });
+
+        function startLoop() {
+            const loopLogic = () => {
+                if (!isMonitoring) return;
+                if (lastVideoTime !== video.currentTime && faceLandmarker) {
+                    lastVideoTime = video.currentTime;
+                    processResults(faceLandmarker.detectForVideo(video, performance.now()));
+                }
+            };
+            const animLoop = () => { loopLogic(); requestAnimationFrame(animLoop); };
+            animLoop();
+            setInterval(() => { if (document.hidden || document.pictureInPictureElement) loopLogic(); }, 150);
+        }
+
+        function processResults(results) {
+            if (!document.pictureInPictureElement) canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+            if (results.faceBlendshapes && results.faceBlendshapes.length > 0) {
+                const categories = results.faceBlendshapes[0].categories;
+                const avgBlink = (categories.find(c => c.categoryName === "eyeBlinkLeft").score + categories.find(c => c.categoryName === "eyeBlinkRight").score) / 2;
+                
+                if (!document.pictureInPictureElement && results.faceLandmarks && results.faceLandmarks.length > 0) {
+                    const color = avgBlink > BLINK_THRESHOLD ? "#EF4444" : "#10B981";
+                    [LEFT_EYE, RIGHT_EYE].forEach(indices => {
+                        canvasCtx.beginPath(); canvasCtx.strokeStyle = color; canvasCtx.lineWidth = 2;
+                        indices.forEach((idx, i) => {
+                            const p = results.faceLandmarks[0][idx];
+                            i === 0 ? canvasCtx.moveTo(p.x * canvas.width, p.y * canvas.height) : canvasCtx.lineTo(p.x * canvas.width, p.y * canvas.height);
+                        });
+                        canvasCtx.closePath(); canvasCtx.stroke();
+                    });
+                }
+                blinkBar.style.width = `${Math.round(avgBlink * 100)}%`;
+                if (avgBlink > BLINK_THRESHOLD) {
+                    blinkBar.classList.replace("bg-emerald-500", "bg-red-500");
+                    if (eyesClosedStart === 0) { eyesClosedStart = Date.now(); statusHeader.innerText = "WARNING"; statusHeader.className = "text-3xl font-bold text-yellow-400"; }
+                    if (Date.now() - eyesClosedStart > ALARM_DELAY_MS && !alarmTriggered) triggerAlarm();
+                } else {
+                    blinkBar.classList.replace("bg-red-500", "bg-emerald-500");
+                    eyesClosedStart = 0; stopAlarm();
+                    if(!alarmTriggered) { statusHeader.innerText = "SAFE"; statusHeader.className = "text-3xl font-extrabold text-emerald-400"; }
+                }
+            }
+        }
+
+        function triggerAlarm() {
+            if (alarmTriggered) return;
+            alarmTriggered = true; isSirenOn = true;
+            document.body.classList.add("alarm-active");
+            statusHeader.innerText = "DANGER"; statusHeader.className = "text-4xl font-black text-red-500"; mainIcon.innerText = "🚨";
+            if (audioCtx) {
+                sirenOsc = audioCtx.createOscillator(); gainNode = audioCtx.createGain();
+                sirenOsc.type = 'square'; sirenOsc.connect(gainNode); gainNode.connect(audioCtx.destination);
+                let high = true;
+                const loop = setInterval(() => {
+                    if (!isSirenOn) { clearInterval(loop); return; }
+                    if (sirenOsc) sirenOsc.frequency.setValueAtTime(high ? 800 : 1200, audioCtx.currentTime);
+                    high = !high;
+                }, 150);
+                sirenOsc.start();
+            }
+        }
+
+        function stopAlarm() {
+            if (!alarmTriggered) return;
+            alarmTriggered = false; isSirenOn = false;
+            document.body.classList.remove("alarm-active");
+            if (sirenOsc) { try { sirenOsc.stop(); sirenOsc.disconnect(); } catch(e){} sirenOsc = null; }
+        }
+
+        sensitivityInput.addEventListener('input', (e) => {
+            BLINK_THRESHOLD = parseFloat(e.target.value);
+            sensVal.innerText = Math.round(((0.8 - BLINK_THRESHOLD) / 0.5) * 100) + "%";
+        });
+
+        initAI();
+    </script>
+</body>
+</html>
+
+
